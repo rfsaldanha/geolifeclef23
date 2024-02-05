@@ -1,0 +1,115 @@
+---
+title: "Baseline model"
+format: html
+editor: visual
+---
+
+## Description
+
+This notebook aims to reproduce the [baseline model](https://www.kaggle.com/code/histoffe/baseline-spatial-rf-pa-sum) from the GEOLIFECLEF23 competition.
+
+## Packages
+
+```{r}
+#| message: false
+library(tidyverse)
+library(tidymodels)
+library(DT)
+```
+
+## Data load
+
+### Training data
+
+The original data comes on this format.
+
+```{r}
+ocPa <- read_delim(
+  file = "data/Presences_Absences_train.csv", 
+  delim = ";", 
+  col_types = cols(
+    glcID = col_character(),
+    gbifID = col_character(),
+    observer = col_character(),
+    datasetName = col_character(),
+    date = col_character(),
+    dayOfYear = col_double(),
+    year = col_double(),
+    lon = col_double(),
+    lat = col_double(),
+    x_EPSG3035 = col_double(),
+    y_EPSG3035 = col_double(),
+    geoUncertaintyInM = col_double(),
+    speciesId = col_character(),
+    patchID = col_character(),
+    timeSerieID = col_double()
+   )
+  )
+```
+
+```{r}
+head(ocPa) %>% datatable() 
+```
+
+We need to perform some operations on the training data.
+
+```{r}
+multi_label_ocpa <- ocPa |>
+  select(patchID, lon, lat, speciesId) |>
+  distinct() |>
+  mutate(speciesId = paste0("esp" , speciesId)) |>
+  mutate(label = TRUE) |>
+  pivot_wider(
+    id_cols = c(lat, lon, patchID),
+    names_from = speciesId,
+    values_from = label
+  ) |>
+  mutate(across(starts_with("esp"), ~replace_na(., replace = FALSE))) |>
+  pivot_longer(cols = starts_with("esp"), names_to = "speciesId") |>
+  mutate(speciesId = substr(speciesId, 4, 1000))
+```
+
+```{r}
+head(multi_label_ocpa, 100) |> datatable()
+```
+
+## Recipes
+
+```{r}
+recipes_list <- list()
+```
+
+```{r}
+for(focalSp in unique(ocPa$speciesId)){
+  tmp <- recipe(value ~ lat + lon, data = multi_label_ocpa) %>%
+    step_filter(speciesId == !!focalSp)
+  
+  tmp <- list(tmp)
+  tmp <- setNames(tmp, paste0("sp", focalSp))
+  
+  recipes_list <- append(recipes_list, tmp)
+  
+  rm(tmp)
+}
+```
+
+## Learner
+
+```{r}
+rf_spec <- rand_forest(
+  trees = tune(),
+  min_n = tune()
+) %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+```
+
+## Workflow
+
+```{r}
+all_workflows <- workflow_set(
+  preproc = recipes_list, 
+  models = list(rf = rf_spec), 
+  cross = TRUE
+)
+```
